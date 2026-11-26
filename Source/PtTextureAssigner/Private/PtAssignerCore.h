@@ -41,6 +41,8 @@ struct FPtSettings
 	TArray<FPtMapRow> Maps;
 	bool bAutoFixTextureSettings = true;
 	bool bSaveAfterApply = true;
+	/** コンテンツブラウザの選択に合わせて、一覧を自動で読み込み直す */
+	bool bFollowSelection = true;
 
 	FPtSettings();
 	void Load();
@@ -69,6 +71,9 @@ namespace PtAssignerCore
 {
 	/** コンテンツブラウザで選択中の StaticMesh / SkeletalMesh */
 	TArray<UObject*> GetSelectedMeshes();
+
+	/** 選択中メッシュの識別文字列（アセットは読み込まない軽量版。選択が変わったかの判定用） */
+	FString GetSelectedMeshSignature();
 
 	/** 書き込みはせず、各スロットの状態だけ調べる（プレビュー） */
 	TArray<TSharedPtr<FPtSlotEntry>> Analyze(const FPtSettings& Settings, const TArray<UObject*>& Meshes);

@@ -341,7 +341,7 @@ void SPtAssignerPanel::Construct(const FArguments&)
 				SNew(STextBlock)
 				.AutoWrapText(true)
 				.LineHeightPercentage(LineHeight)
-				.Text(J(TEXT("① コンテンツブラウザでメッシュを選択\n② 名前が一致したテクスチャは自動で入ります。違うものや空欄は各枠のピッカーから選ぶ（ドラッグ&ドロップも可）\n③ 「準備OK」になった行で「割り当てる」を押す")))
+				.Text(J(TEXT("① メッシュを選択（右クリック →「Pt テクスチャ割り当て」で開く。開いたままなら選択に自動追従）\n② 名前が一致したテクスチャは自動で入ります。違うものや空欄は各枠のピッカーから選ぶ（ドラッグ&ドロップも可）\n③ 「準備OK」になった行で「割り当てる」を押す")))
 			]
 
 			// 設定（普段は閉じておく）
@@ -413,6 +413,20 @@ void SPtAssignerPanel::Construct(const FArguments&)
 					.IsEnabled(this, &SPtAssignerPanel::CanApply)
 					.OnClicked(this, &SPtAssignerPanel::OnApplyClicked)
 				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(16, 0, 0, 0)
+				[
+					SNew(SCheckBox)
+					.ToolTipText(J(TEXT("コンテンツブラウザでメッシュを選ぶと、一覧を自動で読み込み直します")))
+					.IsChecked_Lambda([this]() { return Settings.bFollowSelection ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+					{
+						Settings.bFollowSelection = (S == ECheckBoxState::Checked);
+						Settings.Save();
+					})
+					[
+						SNew(STextBlock).Text(J(TEXT("選択に自動追従")))
+					]
+				]
 			]
 
 			// 一覧
@@ -480,6 +494,8 @@ FReply SPtAssignerPanel::OnApplyClicked()
 
 void SPtAssignerPanel::Refresh()
 {
+	LastSelectionSignature = PtAssignerCore::GetSelectedMeshSignature();
+
 	auto KeyOf = [](const FPtSlotEntry& E) -> FString
 	{
 		const UObject* M = E.Mesh.Get();
@@ -529,6 +545,24 @@ void SPtAssignerPanel::Refresh()
 	else
 	{
 		AppendLog(FString::Printf(TEXT("読み込み：メッシュ %d 件 / スロット %d 件"), Meshes.Num(), Entries.Num()));
+	}
+}
+
+void SPtAssignerPanel::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+	if (!Settings.bFollowSelection || InCurrentTime < NextPollTime)
+	{
+		return;
+	}
+	NextPollTime = InCurrentTime + 0.3;
+
+	// メッシュが選ばれていて、前回と変わった時だけ読み込み直す（空選択では一覧を消さない）
+	const FString Sig = PtAssignerCore::GetSelectedMeshSignature();
+	if (!Sig.IsEmpty() && Sig != LastSelectionSignature)
+	{
+		Refresh();
 	}
 }
 

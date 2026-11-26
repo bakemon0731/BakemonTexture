@@ -142,8 +142,8 @@ namespace
 				return nullptr;
 			}
 			Node->ParameterName = FName(*S.Maps[Row].Param);
-			Node->Texture = Tex[Row];
 			Node->SamplerType = Defs[Row].Sampler;
+			Node->Texture = Tex[Row];
 
 			for (const FOut& O : Defs[Row].Outs)
 			{
@@ -186,6 +186,20 @@ namespace
 			}
 		}
 
+		// 同じテクスチャが複数の枠に入っていたら、圧縮設定を書き換える前に止める（Normal / ORM の自動修正で壊れるため）
+		for (int32 i = 0; i < MapCount; ++i)
+		{
+			for (int32 j = i + 1; j < MapCount; ++j)
+			{
+				if (Tex[i] == Tex[j])
+				{
+					Msg = FString::Printf(TEXT("%s と %s に同じテクスチャ（%s）が入っています。別々のテクスチャを指定してください"),
+						*S.Maps[i].Param, *S.Maps[j].Param, *Tex[i]->GetName());
+					return EResult::Skip;
+				}
+			}
+		}
+
 		// 既存インスタンスの確認
 		UMaterialInstanceConstant* MI = nullptr;
 		const FString InstancePath = S.InstanceFolder / E.InstanceName;
@@ -210,6 +224,14 @@ namespace
 		{
 			FixTexture(Tex[MapNormal], TC_Normalmap, false, Dirty);
 			FixTexture(Tex[MapOrm], TC_Masks, false, Dirty);
+			{
+				// 以前の誤設定で Normalmap / Masks になった BaseColor を、通常のカラー設定（sRGB）に戻す
+				const TextureCompressionSettings Cur = Tex[MapBase]->CompressionSettings;
+				if (Cur == TC_Normalmap || Cur == TC_Masks)
+				{
+					FixTexture(Tex[MapBase], TC_Default, true, Dirty);
+				}
+			}
 		}
 		else if (!Master && Tex[MapNormal]->CompressionSettings != TC_Normalmap)
 		{
@@ -248,20 +270,75 @@ namespace
 		}
 
 		const TArray<FTextureParameterValue> Previous = MI->TextureParameterValues;
+
+		// 1) まず通常のAPIで設定
+		for (int32 i = 0; i < MapCount; ++i)
+		{
+			UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MI, FName(*S.Maps[i].Param), Tex[i]);
+		}
+		UMaterialEditingLibrary::UpdateMaterialInstance(MI);
+
+		// 2) インスタンス自身が「上書き」として持っているかを直接確認する。
+		//    （GetMaterialInstanceTextureParameterValue は親の初期値も返すため、
+		//      上書きが入っていなくても、親の初期値と同じなら一致してしまう）
+		auto HasOverride = [MI](const FName Param, const UTexture* Expected) -> bool
+		{
+			for (const FTextureParameterValue& V : MI->TextureParameterValues)
+			{
+				if (V.ParameterInfo.Name == Param && V.ParameterValue == Expected)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		// 3) 入っていなければ直接書き込む（取りこぼし対策）
+		bool bPatched = false;
 		for (int32 i = 0; i < MapCount; ++i)
 		{
 			const FName Param(*S.Maps[i].Param);
-			UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MI, Param, Tex[i]);
-			UTexture* Actual = UMaterialEditingLibrary::GetMaterialInstanceTextureParameterValue(MI, Param);
-			if (Actual != Tex[i])
+			if (HasOverride(Param, Tex[i]))
+			{
+				continue;
+			}
+			bool bFound = false;
+			for (FTextureParameterValue& V : MI->TextureParameterValues)
+			{
+				if (V.ParameterInfo.Name == Param)
+				{
+					V.ParameterValue = Tex[i];
+					bFound = true;
+				}
+			}
+			if (!bFound)
+			{
+				FTextureParameterValue NewValue;
+				NewValue.ParameterInfo = FMaterialParameterInfo(Param);
+				NewValue.ParameterValue = Tex[i];
+				MI->TextureParameterValues.Add(NewValue);
+			}
+			bPatched = true;
+		}
+		if (bPatched)
+		{
+			UMaterialEditingLibrary::UpdateMaterialInstance(MI);
+		}
+
+		// 4) 最終確認。それでも入っていなければ元に戻して失敗にする
+		FString Confirm;
+		for (int32 i = 0; i < MapCount; ++i)
+		{
+			const FName Param(*S.Maps[i].Param);
+			if (!HasOverride(Param, Tex[i]))
 			{
 				MI->TextureParameterValues = Previous;
 				UMaterialEditingLibrary::UpdateMaterialInstance(MI);
-				Msg = FString::Printf(TEXT("%s の設定が一致しません"), *S.Maps[i].Param);
+				Msg = FString::Printf(TEXT("%s にテクスチャを設定できませんでした（親マテリアルに同名のテクスチャパラメータがあるか確認してください）"), *S.Maps[i].Param);
 				return EResult::Fail;
 			}
+			Confirm += FString::Printf(TEXT("%s%s=%s"), i > 0 ? TEXT(", ") : TEXT(""), *S.Maps[i].Param, *Tex[i]->GetName());
 		}
-		UMaterialEditingLibrary::UpdateMaterialInstance(MI);
 		MI->MarkPackageDirty();
 		Dirty.AddUnique(MI->GetOutermost());
 
@@ -284,7 +361,8 @@ namespace
 		Dirty.AddUnique(Mesh->GetOutermost());
 		E.MaterialData = FAssetData(MI);
 
-		Msg = bCreated ? TEXT("インスタンスを作成して割り当て") : TEXT("既存インスタンスを更新して割り当て");
+		Msg = FString::Printf(TEXT("%s [%s]"),
+			bCreated ? TEXT("インスタンスを作成して割り当て") : TEXT("既存インスタンスを更新して割り当て"), *Confirm);
 		return EResult::Ok;
 	}
 }
@@ -307,6 +385,7 @@ void FPtSettings::Load()
 	GConfig->GetString(ConfigSection, TEXT("InstanceFolder"), InstanceFolder, GEditorPerProjectIni);
 	GConfig->GetBool(ConfigSection, TEXT("AutoFix"), bAutoFixTextureSettings, GEditorPerProjectIni);
 	GConfig->GetBool(ConfigSection, TEXT("SaveAfterApply"), bSaveAfterApply, GEditorPerProjectIni);
+	GConfig->GetBool(ConfigSection, TEXT("FollowSelection"), bFollowSelection, GEditorPerProjectIni);
 	for (int32 i = 0; i < Maps.Num(); ++i)
 	{
 		GConfig->GetString(ConfigSection, *FString::Printf(TEXT("Param%d"), i), Maps[i].Param, GEditorPerProjectIni);
@@ -321,6 +400,7 @@ void FPtSettings::Save() const
 	GConfig->SetString(ConfigSection, TEXT("InstanceFolder"), *InstanceFolder, GEditorPerProjectIni);
 	GConfig->SetBool(ConfigSection, TEXT("AutoFix"), bAutoFixTextureSettings, GEditorPerProjectIni);
 	GConfig->SetBool(ConfigSection, TEXT("SaveAfterApply"), bSaveAfterApply, GEditorPerProjectIni);
+	GConfig->SetBool(ConfigSection, TEXT("FollowSelection"), bFollowSelection, GEditorPerProjectIni);
 	for (int32 i = 0; i < Maps.Num(); ++i)
 	{
 		GConfig->SetString(ConfigSection, *FString::Printf(TEXT("Param%d"), i), *Maps[i].Param, GEditorPerProjectIni);
@@ -348,11 +428,34 @@ TArray<UObject*> PtAssignerCore::GetSelectedMeshes()
 	return Result;
 }
 
+FString PtAssignerCore::GetSelectedMeshSignature()
+{
+	FContentBrowserModule& CB = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FAssetData> Selected;
+	CB.Get().GetSelectedAssets(Selected);
+
+	const FTopLevelAssetPath StaticClass = UStaticMesh::StaticClass()->GetClassPathName();
+	const FTopLevelAssetPath SkeletalClass = USkeletalMesh::StaticClass()->GetClassPathName();
+
+	TArray<FString> Paths;
+	for (const FAssetData& A : Selected)
+	{
+		if (A.AssetClassPath == StaticClass || A.AssetClassPath == SkeletalClass)
+		{
+			Paths.Add(A.GetSoftObjectPath().ToString());
+		}
+	}
+	Paths.Sort();
+	return FString::Join(Paths, TEXT(";"));
+}
+
 void PtAssignerCore::UpdateStatus(FPtSlotEntry& E, const FPtSettings& S)
 {
 	TArray<FString> Problems;
 	bool bAmbiguous = false;
 	int32 ManualCount = 0;
+	TSet<FSoftObjectPath> SeenPaths;
+	TArray<FString> DuplicateNames;
 
 	for (int32 i = 0; i < S.Maps.Num(); ++i)
 	{
@@ -360,6 +463,14 @@ void PtAssignerCore::UpdateStatus(FPtSlotEntry& E, const FPtSettings& S)
 		const EPtTexSource Src = E.Sources.IsValidIndex(i) ? E.Sources[i] : EPtTexSource::None;
 		if (bHas)
 		{
+			if (SeenPaths.Contains(E.TexturePaths[i]))
+			{
+				DuplicateNames.AddUnique(E.TexturePaths[i].GetAssetName());
+			}
+			else
+			{
+				SeenPaths.Add(E.TexturePaths[i]);
+			}
 			if (Src == EPtTexSource::Manual) { ++ManualCount; }
 			continue;
 		}
@@ -375,6 +486,11 @@ void PtAssignerCore::UpdateStatus(FPtSlotEntry& E, const FPtSettings& S)
 		}
 	}
 
+	if (DuplicateNames.Num() > 0)
+	{
+		Problems.Add(FString::Printf(TEXT("同じテクスチャが複数の枠に入っています：%s（BaseColor / Normal / ORM は別々のテクスチャにしてください）"),
+			*FString::Join(DuplicateNames, TEXT(", "))));
+	}
 	if (Problems.Num() == 0)
 	{
 		E.Status = EPtStatus::Ready;

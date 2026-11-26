@@ -16,6 +16,11 @@ public:
 
 	void Construct(const FArguments& InArgs);
 
+	/** コンテンツブラウザの選択を読み込み直す（メニューから開いた時にも外部から呼ぶ） */
+	void Refresh();
+
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+
 private:
 	TSharedRef<ITableRow> OnGenerateRow(TSharedPtr<FPtSlotEntry> Item, const TSharedRef<STableViewBase>& Owner);
 	TSharedRef<SWidget> MakeTextRow(const FString& Label, TFunction<FString()> Get, TFunction<void(const FString&)> Set);
@@ -25,7 +30,6 @@ private:
 	FReply OnApplyClicked();
 	bool CanApply() const;
 
-	void Refresh();
 	void AppendLog(const FString& Line);
 
 	FPtSettings Settings;
@@ -34,4 +38,6 @@ private:
 	TSharedPtr<SMultiLineEditableTextBox> LogBox;
 	TSharedPtr<FAssetThumbnailPool> ThumbnailPool;
 	FString LogText;
+	FString LastSelectionSignature;
+	double NextPollTime = 0.0;
 };
