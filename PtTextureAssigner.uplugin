@@ -1,0 +1,17 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Pt Texture Assigner",
+	"Description": "Substance 3D Painter のテクスチャを選択メッシュへ自動割り当てするエディタ拡張",
+	"Category": "Editor",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"Modules": [
+		{
+			"Name": "PtTextureAssigner",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
