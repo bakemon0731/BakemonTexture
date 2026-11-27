@@ -16,7 +16,7 @@ public class PtTextureAssigner : ModuleRules
 			"Slate", "SlateCore", "InputCore",
 			"UnrealEd", "ToolMenus",
 			"AssetRegistry", "AssetTools", "ContentBrowser",
-			"MaterialEditor", "PropertyEditor"
+			"MaterialEditor", "PropertyEditor", "DesktopPlatform"
 		});
 	}
 }
